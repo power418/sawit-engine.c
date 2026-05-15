@@ -1,6 +1,6 @@
 #include "console_overlay.h"
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__linux__)
 
 #include <string.h>
 
@@ -42,7 +42,28 @@ void console_overlay_render(ConsoleOverlay* overlay, int width, int height, cons
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#define CONSOLE_OVERLAY_PATH_MAX MAX_PATH
+#elif defined(__linux__)
+#include <limits.h>
+#include <unistd.h>
+#include <X11/Xlib.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+#define CONSOLE_OVERLAY_PATH_MAX PATH_MAX
+
+extern Display* glXGetCurrentDisplay(void);
+extern void glXUseXFont(Font font, int first, int count, int list_base);
+#endif
+
+#ifndef MAX_PATH
+#define MAX_PATH CONSOLE_OVERLAY_PATH_MAX
+#endif
+
 static void console_overlay_show_error(const char* title, const char* message);
+static int console_overlay_build_font(GLuint* out_font_base);
 static void console_overlay_draw_rect(float left, float top, float right, float bottom, float r, float g, float b, float a);
 static void console_overlay_draw_outline(float left, float top, float right, float bottom, float r, float g, float b, float a);
 static void console_overlay_draw_circle(float center_x, float center_y, float radius, float r, float g, float b, float a);
@@ -68,6 +89,7 @@ static void console_overlay_draw_text(const ConsoleOverlay* overlay, float x, fl
 static void console_overlay_copy_text_fit(char* buffer, size_t buffer_size, const char* text, float max_width);
 static int console_overlay_get_toggle_rect(const OverlayState* overlay, OverlayToggleId toggle_id, float* out_left, float* out_top, float* out_right, float* out_bottom);
 static int console_overlay_get_slider_rect(const OverlayState* overlay, OverlaySliderId slider_id, float* out_left, float* out_top, float* out_right, float* out_bottom);
+static int console_overlay_get_render_quality_rect(const OverlayState* overlay, RendererQualityPreset preset, float* out_left, float* out_top, float* out_right, float* out_bottom);
 static int console_overlay_get_gpu_preference_rect(const OverlayState* overlay, GpuPreferenceMode mode, float* out_left, float* out_top, float* out_right, float* out_bottom);
 static float console_overlay_get_slider_value(const SceneSettings* settings, OverlaySliderId slider_id);
 static void console_overlay_format_slider_value(char* buffer, size_t buffer_size, OverlaySliderId slider_id, float value);
@@ -79,63 +101,14 @@ enum
 
 int console_overlay_create(ConsoleOverlay* overlay)
 {
-  HDC device_context = NULL;
-  HFONT font = NULL;
-  HGDIOBJ previous_font = NULL;
-
   if (overlay == NULL)
   {
     return 0;
   }
 
   memset(overlay, 0, sizeof(*overlay));
-  device_context = wglGetCurrentDC();
-  if (device_context == NULL)
-  {
-    console_overlay_show_error("OpenGL Error", "Failed to resolve the device context for the console overlay font.");
-    return 0;
-  }
-
-  font = CreateFontA(
-    -16,
-    0,
-    0,
-    0,
-    FW_NORMAL,
-    FALSE,
-    FALSE,
-    FALSE,
-    ANSI_CHARSET,
-    OUT_DEFAULT_PRECIS,
-    CLIP_DEFAULT_PRECIS,
-    CLEARTYPE_QUALITY,
-    FIXED_PITCH | FF_MODERN,
-    "Consolas"
-  );
-  if (font == NULL)
-  {
-    console_overlay_show_error("Win32 Error", "Failed to create the console overlay font.");
-    return 0;
-  }
-
-  previous_font = SelectObject(device_context, font);
-  overlay->font_base = glGenLists(96);
-  if (overlay->font_base == 0U || !wglUseFontBitmapsA(device_context, 32, 96, overlay->font_base))
-  {
-    if (overlay->font_base != 0U)
-    {
-      glDeleteLists(overlay->font_base, 96);
-      overlay->font_base = 0U;
-    }
-    (void)SelectObject(device_context, previous_font);
-    (void)DeleteObject(font);
-    console_overlay_show_error("Win32 Error", "Failed to build OpenGL bitmap glyphs for the console overlay.");
-    return 0;
-  }
-
-  (void)SelectObject(device_context, previous_font);
-  (void)DeleteObject(font);
-  if (!console_overlay_create_backdrop_pipeline(overlay))
+  if (!console_overlay_build_font(&overlay->font_base) ||
+    !console_overlay_create_backdrop_pipeline(overlay))
   {
     console_overlay_destroy(overlay);
     return 0;
@@ -197,6 +170,7 @@ void console_overlay_render(ConsoleOverlay* overlay, int width, int height, cons
     .hot_slider = OVERLAY_SLIDER_NONE,
     .active_slider = OVERLAY_SLIDER_NONE,
     .hot_toggle = OVERLAY_TOGGLE_NONE,
+    .hot_render_quality_preset = -1,
     .hot_gpu_preference = -1,
     .god_mode_enabled = 0,
     .freeze_time_enabled = 0,
@@ -695,6 +669,87 @@ void console_overlay_render(ConsoleOverlay* overlay, int width, int height, cons
     }
 
     {
+      int quality_card_left_i = 0;
+      int quality_card_top_i = 0;
+      int quality_card_right_i = 0;
+      int quality_card_bottom_i = 0;
+      float quality_card_left = 0.0f;
+      float quality_card_top = 0.0f;
+      float quality_card_right = 0.0f;
+      float quality_card_bottom = 0.0f;
+
+      (void)overlay_get_quality_selector_rect(
+        active_overlay->panel_width,
+        active_overlay->scroll_offset,
+        &quality_card_left_i,
+        &quality_card_top_i,
+        &quality_card_right_i,
+        &quality_card_bottom_i);
+      quality_card_left = (float)quality_card_left_i;
+      quality_card_top = (float)quality_card_top_i;
+      quality_card_right = (float)quality_card_right_i;
+      quality_card_bottom = (float)quality_card_bottom_i;
+
+      console_overlay_draw_text(overlay, quality_card_left, quality_card_top - 8.0f, 0.86f, 0.88f, 0.92f, "Render quality");
+      console_overlay_draw_rect(quality_card_left, quality_card_top, quality_card_right, quality_card_bottom, 0.09f, 0.10f, 0.13f, 0.98f);
+      console_overlay_draw_outline(quality_card_left, quality_card_top, quality_card_right, quality_card_bottom, 0.23f, 0.26f, 0.32f, 1.0f);
+
+      {
+        RendererQualityPreset preset = RENDER_QUALITY_PRESET_HIGH;
+        for (preset = RENDER_QUALITY_PRESET_HIGH; preset < RENDER_QUALITY_PRESET_COUNT; ++preset)
+        {
+          float button_left = 0.0f;
+          float button_top = 0.0f;
+          float button_right = 0.0f;
+          float button_bottom = 0.0f;
+          const int selected = active_overlay->render_quality_preset == preset;
+          const int hot = active_overlay->hot_render_quality_preset == (int)preset;
+          const float pulse = selected ? (0.88f + 0.12f * (0.5f + 0.5f * sinf(active_overlay->ui_time_seconds * 4.1f))) : 1.0f;
+          const char* label = render_quality_preset_get_label(preset);
+
+          if (!console_overlay_get_render_quality_rect(active_overlay, preset, &button_left, &button_top, &button_right, &button_bottom))
+          {
+            continue;
+          }
+
+          console_overlay_draw_rect(
+            button_left,
+            button_top,
+            button_right,
+            button_bottom,
+            selected ? (0.40f * pulse) : (hot ? 0.20f : 0.11f),
+            selected ? (0.34f * pulse) : (hot ? 0.22f : 0.12f),
+            selected ? (0.20f * pulse) : (hot ? 0.16f : 0.15f),
+            0.98f);
+          console_overlay_draw_outline(
+            button_left,
+            button_top,
+            button_right,
+            button_bottom,
+            selected ? 0.92f * pulse : (hot ? 0.90f : 0.24f),
+            selected ? 0.66f * pulse : (hot ? 0.78f : 0.28f),
+            selected ? 0.34f * pulse : (hot ? 0.48f : 0.35f),
+            1.0f);
+          console_overlay_draw_text(
+            overlay,
+            button_left + 10.0f,
+            button_top + 16.0f,
+            selected ? 0.98f : 0.84f,
+            selected ? 0.90f : 0.86f,
+            selected ? 0.72f : 0.91f,
+            label);
+        }
+      }
+
+      console_overlay_copy_text_fit(
+        text_buffer,
+        sizeof(text_buffer),
+        render_quality_preset_get_description(active_overlay->render_quality_preset),
+        (quality_card_right - quality_card_left) - 20.0f);
+      console_overlay_draw_text(overlay, quality_card_left + 10.0f, quality_card_top + 52.0f, 0.78f, 0.82f, 0.88f, text_buffer);
+    }
+
+    {
       int gpu_card_left_i = 0;
       int gpu_card_top_i = 0;
       int gpu_card_right_i = 0;
@@ -867,7 +922,140 @@ void console_overlay_render(ConsoleOverlay* overlay, int width, int height, cons
 static void console_overlay_show_error(const char* title, const char* message)
 {
   diagnostics_logf("%s: %s", title, message);
+#if defined(_WIN32)
   (void)MessageBoxA(NULL, message, title, MB_ICONERROR | MB_OK);
+#else
+  (void)title;
+  (void)message;
+#endif
+}
+
+static int console_overlay_build_font(GLuint* out_font_base)
+{
+  GLuint font_base = 0U;
+
+  if (out_font_base == NULL)
+  {
+    return 0;
+  }
+
+  *out_font_base = 0U;
+
+#if defined(_WIN32)
+  {
+    HDC device_context = wglGetCurrentDC();
+    HFONT font = NULL;
+    HGDIOBJ previous_font = NULL;
+
+    if (device_context == NULL)
+    {
+      console_overlay_show_error("OpenGL Error", "Failed to resolve the device context for the console overlay font.");
+      return 0;
+    }
+
+    font = CreateFontA(
+      -16,
+      0,
+      0,
+      0,
+      FW_NORMAL,
+      FALSE,
+      FALSE,
+      FALSE,
+      ANSI_CHARSET,
+      OUT_DEFAULT_PRECIS,
+      CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY,
+      FIXED_PITCH | FF_MODERN,
+      "Consolas"
+    );
+    if (font == NULL)
+    {
+      console_overlay_show_error("Win32 Error", "Failed to create the console overlay font.");
+      return 0;
+    }
+
+    previous_font = SelectObject(device_context, font);
+    font_base = glGenLists(96);
+    if (font_base == 0U || !wglUseFontBitmapsA(device_context, 32, 96, font_base))
+    {
+      if (font_base != 0U)
+      {
+        glDeleteLists(font_base, 96);
+      }
+      (void)SelectObject(device_context, previous_font);
+      (void)DeleteObject(font);
+      console_overlay_show_error("Win32 Error", "Failed to build OpenGL bitmap glyphs for the console overlay.");
+      return 0;
+    }
+
+    (void)SelectObject(device_context, previous_font);
+    (void)DeleteObject(font);
+  }
+#elif defined(__linux__)
+  {
+    static const char* k_font_names[] = {
+      "-misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1",
+      "9x15",
+      "fixed"
+    };
+    Display* display = glXGetCurrentDisplay();
+    Display* owned_display = NULL;
+    XFontStruct* font = NULL;
+    size_t font_index = 0U;
+
+    if (display == NULL)
+    {
+      owned_display = XOpenDisplay(NULL);
+      display = owned_display;
+    }
+    if (display == NULL)
+    {
+      console_overlay_show_error("X11 Error", "Failed to open an X11 display for the console overlay font.");
+      return 0;
+    }
+
+    for (font_index = 0U; font_index < sizeof(k_font_names) / sizeof(k_font_names[0]); ++font_index)
+    {
+      font = XLoadQueryFont(display, k_font_names[font_index]);
+      if (font != NULL)
+      {
+        break;
+      }
+    }
+    if (font == NULL)
+    {
+      if (owned_display != NULL)
+      {
+        XCloseDisplay(owned_display);
+      }
+      console_overlay_show_error("X11 Error", "Failed to load a fixed-width X11 font for the console overlay.");
+      return 0;
+    }
+
+    font_base = glGenLists(96);
+    if (font_base == 0U)
+    {
+      XFreeFont(display, font);
+      if (owned_display != NULL)
+      {
+        XCloseDisplay(owned_display);
+      }
+      console_overlay_show_error("OpenGL Error", "Failed to allocate console overlay glyph lists.");
+      return 0;
+    }
+
+    glXUseXFont(font->fid, 32, 96, (int)font_base);
+    XFreeFont(display, font);
+    if (owned_display != NULL)
+    {
+      XCloseDisplay(owned_display);
+    }
+  }
+#endif
+
+  *out_font_base = font_base;
+  return font_base != 0U;
 }
 
 static void console_overlay_draw_rect(float left, float top, float right, float bottom, float r, float g, float b, float a)
@@ -975,6 +1163,7 @@ static void console_overlay_draw_panel_toggle_button(const OverlayState* overlay
 
 static int console_overlay_build_shader_path(const char* relative_path, char* out_path, size_t out_path_size)
 {
+#if defined(_WIN32)
   static const char* k_shader_fallbacks[] = {
     "shaders\\",
     "..\\shaders\\",
@@ -1025,6 +1214,70 @@ static int console_overlay_build_shader_path(const char* relative_path, char* ou
   }
 
   return 0;
+#elif defined(__linux__)
+  static const char* k_shader_fallbacks[] = {
+    "shaders/",
+    "../shaders/",
+    "../../shaders/",
+    "../../../shaders/"
+  };
+  char executable_path[MAX_PATH] = { 0 };
+  char executable_directory[MAX_PATH] = { 0 };
+  char normalized_relative_path[MAX_PATH] = { 0 };
+  ssize_t executable_length = 0;
+  const char* last_separator = NULL;
+  size_t relative_index = 0U;
+  size_t fallback_index = 0U;
+
+  if (relative_path == NULL || out_path == NULL || out_path_size == 0U)
+  {
+    return 0;
+  }
+
+  executable_length = readlink("/proc/self/exe", executable_path, sizeof(executable_path) - 1U);
+  if (executable_length <= 0 || executable_length >= (ssize_t)sizeof(executable_path))
+  {
+    return 0;
+  }
+  executable_path[executable_length] = '\0';
+
+  last_separator = strrchr(executable_path, '/');
+  if (last_separator == NULL)
+  {
+    return 0;
+  }
+
+  memcpy(executable_directory, executable_path, (size_t)(last_separator - executable_path));
+  executable_directory[last_separator - executable_path] = '\0';
+
+  for (relative_index = 0U; relative_path[relative_index] != '\0' && relative_index < sizeof(normalized_relative_path) - 1U; ++relative_index)
+  {
+    normalized_relative_path[relative_index] = (relative_path[relative_index] == '\\') ? '/' : relative_path[relative_index];
+  }
+  normalized_relative_path[relative_index] = '\0';
+
+  for (fallback_index = 0U; fallback_index < sizeof(k_shader_fallbacks) / sizeof(k_shader_fallbacks[0]); ++fallback_index)
+  {
+    const int written = snprintf(
+      out_path,
+      out_path_size,
+      "%s/%s%s",
+      executable_directory,
+      k_shader_fallbacks[fallback_index],
+      normalized_relative_path);
+    if (written > 0 && (size_t)written < out_path_size && access(out_path, R_OK) == 0)
+    {
+      return 1;
+    }
+  }
+
+  return 0;
+#else
+  (void)relative_path;
+  (void)out_path;
+  (void)out_path_size;
+  return 0;
+#endif
 }
 
 static int console_overlay_load_text_file(const char* path, const char* label, char** out_source)
@@ -1040,7 +1293,12 @@ static int console_overlay_load_text_file(const char* path, const char* label, c
   }
 
   *out_source = NULL;
+#if defined(_WIN32)
   if (fopen_s(&file, path, "rb") != 0 || file == NULL)
+#else
+  file = fopen(path, "rb");
+  if (file == NULL)
+#endif
   {
     char message[512] = { 0 };
     (void)snprintf(message, sizeof(message), "Failed to open shader file: %s\n%s", label, path);
@@ -1718,6 +1976,11 @@ static int console_overlay_get_slider_rect(const OverlayState* overlay, OverlayS
       y += (float)overlay_get_cloud_toggle_block_height();
     }
 
+    if (overlay_has_quality_selector_before_slider((OverlaySliderId)index))
+    {
+      y += (float)overlay_get_quality_selector_block_height();
+    }
+
     if (overlay_has_gpu_selector_before_slider((OverlaySliderId)index))
     {
       y += (float)overlay_get_gpu_selector_block_height();
@@ -1867,6 +2130,11 @@ static int console_overlay_get_toggle_rect(const OverlayState* overlay, OverlayT
       y += (float)overlay_get_cloud_toggle_block_height();
     }
 
+    if (overlay_has_quality_selector_before_slider((OverlaySliderId)index))
+    {
+      y += (float)overlay_get_quality_selector_block_height();
+    }
+
     if (overlay_has_gpu_selector_before_slider((OverlaySliderId)index))
     {
       y += (float)overlay_get_gpu_selector_block_height();
@@ -1881,6 +2149,50 @@ static int console_overlay_get_toggle_rect(const OverlayState* overlay, OverlayT
   }
 
   return 0;
+}
+
+static int console_overlay_get_render_quality_rect(const OverlayState* overlay, RendererQualityPreset preset, float* out_left, float* out_top, float* out_right, float* out_bottom)
+{
+  int left = 0;
+  int top = 0;
+  int right = 0;
+  int bottom = 0;
+
+  if (overlay == NULL)
+  {
+    return 0;
+  }
+
+  if (!overlay_get_render_quality_button_rect(
+    overlay->panel_width,
+    overlay->scroll_offset,
+    preset,
+    &left,
+    &top,
+    &right,
+    &bottom))
+  {
+    return 0;
+  }
+
+  if (out_left != NULL)
+  {
+    *out_left = (float)left;
+  }
+  if (out_top != NULL)
+  {
+    *out_top = (float)top;
+  }
+  if (out_right != NULL)
+  {
+    *out_right = (float)right;
+  }
+  if (out_bottom != NULL)
+  {
+    *out_bottom = (float)bottom;
+  }
+
+  return 1;
 }
 
 static int console_overlay_get_gpu_preference_rect(const OverlayState* overlay, GpuPreferenceMode mode, float* out_left, float* out_top, float* out_right, float* out_bottom)

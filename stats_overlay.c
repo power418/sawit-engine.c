@@ -1,6 +1,6 @@
 #include "stats_overlay.h"
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__linux__)
 
 #include <string.h>
 
@@ -41,6 +41,13 @@ void stats_overlay_render(StatsOverlay* overlay, int width, int height, const Ov
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+#if defined(__linux__)
+#include <X11/Xlib.h>
+
+extern Display* glXGetCurrentDisplay(void);
+extern void glXUseXFont(Font font, int first, int count, int list_base);
+#endif
 
 static void stats_overlay_show_error(const char* title, const char* message);
 static int stats_overlay_build_font(GLuint* out_font_base, int font_height);
@@ -146,6 +153,7 @@ void stats_overlay_render(StatsOverlay* overlay, int width, int height, const Ov
     .hot_slider = OVERLAY_SLIDER_NONE,
     .active_slider = OVERLAY_SLIDER_NONE,
     .hot_toggle = OVERLAY_TOGGLE_NONE,
+    .hot_render_quality_preset = -1,
     .god_mode_enabled = 0,
     .ui_time_seconds = 0.0f,
     .scroll_offset = 0.0f,
@@ -456,14 +464,16 @@ void stats_overlay_render(StatsOverlay* overlay, int width, int height, const Ov
 static void stats_overlay_show_error(const char* title, const char* message)
 {
   diagnostics_logf("%s: %s", title, message);
+#if defined(_WIN32)
   (void)MessageBoxA(NULL, message, title, MB_ICONERROR | MB_OK);
+#else
+  (void)title;
+  (void)message;
+#endif
 }
 
 static int stats_overlay_build_font(GLuint* out_font_base, int font_height)
 {
-  HDC device_context = NULL;
-  HFONT font = NULL;
-  HGDIOBJ previous_font = NULL;
   GLuint font_base = 0U;
 
   if (out_font_base == NULL)
@@ -471,51 +481,122 @@ static int stats_overlay_build_font(GLuint* out_font_base, int font_height)
     return 0;
   }
 
-  device_context = wglGetCurrentDC();
-  if (device_context == NULL)
-  {
-    stats_overlay_show_error("OpenGL Error", "Failed to resolve the device context for the stats overlay font.");
-    return 0;
-  }
+  *out_font_base = 0U;
 
-  font = CreateFontA(
-    font_height,
-    0,
-    0,
-    0,
-    FW_NORMAL,
-    FALSE,
-    FALSE,
-    FALSE,
-    ANSI_CHARSET,
-    OUT_DEFAULT_PRECIS,
-    CLIP_DEFAULT_PRECIS,
-    CLEARTYPE_QUALITY,
-    FIXED_PITCH | FF_MODERN,
-    "Consolas"
-  );
-  if (font == NULL)
+#if defined(_WIN32)
   {
-    stats_overlay_show_error("Win32 Error", "Failed to create the stats overlay font.");
-    return 0;
-  }
+    HDC device_context = wglGetCurrentDC();
+    HFONT font = NULL;
+    HGDIOBJ previous_font = NULL;
 
-  previous_font = SelectObject(device_context, font);
-  font_base = glGenLists(96);
-  if (font_base == 0U || !wglUseFontBitmapsA(device_context, 32, 96, font_base))
-  {
-    if (font_base != 0U)
+    if (device_context == NULL)
     {
-      glDeleteLists(font_base, 96);
+      stats_overlay_show_error("OpenGL Error", "Failed to resolve the device context for the stats overlay font.");
+      return 0;
     }
+
+    font = CreateFontA(
+      font_height,
+      0,
+      0,
+      0,
+      FW_NORMAL,
+      FALSE,
+      FALSE,
+      FALSE,
+      ANSI_CHARSET,
+      OUT_DEFAULT_PRECIS,
+      CLIP_DEFAULT_PRECIS,
+      CLEARTYPE_QUALITY,
+      FIXED_PITCH | FF_MODERN,
+      "Consolas"
+    );
+    if (font == NULL)
+    {
+      stats_overlay_show_error("Win32 Error", "Failed to create the stats overlay font.");
+      return 0;
+    }
+
+    previous_font = SelectObject(device_context, font);
+    font_base = glGenLists(96);
+    if (font_base == 0U || !wglUseFontBitmapsA(device_context, 32, 96, font_base))
+    {
+      if (font_base != 0U)
+      {
+        glDeleteLists(font_base, 96);
+      }
+      (void)SelectObject(device_context, previous_font);
+      (void)DeleteObject(font);
+      stats_overlay_show_error("Win32 Error", "Failed to build glyphs for the stats overlay.");
+      return 0;
+    }
+
     (void)SelectObject(device_context, previous_font);
     (void)DeleteObject(font);
-    stats_overlay_show_error("Win32 Error", "Failed to build glyphs for the stats overlay.");
-    return 0;
   }
+#elif defined(__linux__)
+  {
+    const char* font_name = "fixed";
+    Display* display = glXGetCurrentDisplay();
+    Display* owned_display = NULL;
+    XFontStruct* font = NULL;
 
-  (void)SelectObject(device_context, previous_font);
-  (void)DeleteObject(font);
+    if (font_height <= -24)
+    {
+      font_name = "10x20";
+    }
+    else if (font_height <= -16)
+    {
+      font_name = "9x15";
+    }
+
+    if (display == NULL)
+    {
+      owned_display = XOpenDisplay(NULL);
+      display = owned_display;
+    }
+    if (display == NULL)
+    {
+      stats_overlay_show_error("X11 Error", "Failed to open an X11 display for the stats overlay font.");
+      return 0;
+    }
+
+    font = XLoadQueryFont(display, font_name);
+    if (font == NULL)
+    {
+      font = XLoadQueryFont(display, "fixed");
+    }
+    if (font == NULL)
+    {
+      if (owned_display != NULL)
+      {
+        XCloseDisplay(owned_display);
+      }
+      stats_overlay_show_error("X11 Error", "Failed to load a fixed-width X11 font for the stats overlay.");
+      return 0;
+    }
+
+    font_base = glGenLists(96);
+    if (font_base == 0U)
+    {
+      XFreeFont(display, font);
+      if (owned_display != NULL)
+      {
+        XCloseDisplay(owned_display);
+      }
+      stats_overlay_show_error("OpenGL Error", "Failed to allocate stats overlay glyph lists.");
+      return 0;
+    }
+
+    glXUseXFont(font->fid, 32, 96, (int)font_base);
+    XFreeFont(display, font);
+    if (owned_display != NULL)
+    {
+      XCloseDisplay(owned_display);
+    }
+  }
+#endif
+
   *out_font_base = font_base;
   return 1;
 }

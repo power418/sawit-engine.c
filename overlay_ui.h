@@ -53,6 +53,7 @@ typedef struct OverlayState
   int hot_slider;
   int active_slider;
   int hot_toggle;
+  int hot_render_quality_preset;
   int hot_gpu_preference;
   int god_mode_enabled;
   int freeze_time_enabled;
@@ -78,6 +79,10 @@ enum
   OVERLAY_UI_TOGGLE_BUTTON_SIZE = 40,
   OVERLAY_UI_SLIDER_HEIGHT = 26,
   OVERLAY_UI_SLIDER_TRACK_HEIGHT = 6,
+  OVERLAY_UI_QUALITY_CARD_HEIGHT = 74,
+  OVERLAY_UI_QUALITY_BUTTON_HEIGHT = 24,
+  OVERLAY_UI_QUALITY_BUTTON_GAP = 8,
+  OVERLAY_UI_QUALITY_CARD_PADDING = 10,
   OVERLAY_UI_GPU_CARD_HEIGHT = 96,
   OVERLAY_UI_GPU_BUTTON_HEIGHT = 24,
   OVERLAY_UI_GPU_BUTTON_GAP = 8,
@@ -174,6 +179,11 @@ static inline int overlay_has_gpu_selector_before_slider(OverlaySliderId slider_
   return slider_id == OVERLAY_SLIDER_SUN_DISTANCE;
 }
 
+static inline int overlay_has_quality_selector_before_slider(OverlaySliderId slider_id)
+{
+  return slider_id == OVERLAY_SLIDER_SUN_DISTANCE;
+}
+
 static inline int overlay_has_metric_card_before_slider(OverlaySliderId slider_id)
 {
   return slider_id == OVERLAY_SLIDER_TERRAIN_BASE;
@@ -192,6 +202,11 @@ static inline int overlay_get_cloud_toggle_block_height(void)
 static inline int overlay_get_gpu_selector_block_height(void)
 {
   return OVERLAY_UI_LABEL_HEIGHT + OVERLAY_UI_ITEM_SPACING + OVERLAY_UI_GPU_CARD_HEIGHT + OVERLAY_UI_SECTION_SPACING;
+}
+
+static inline int overlay_get_quality_selector_block_height(void)
+{
+  return OVERLAY_UI_LABEL_HEIGHT + OVERLAY_UI_ITEM_SPACING + OVERLAY_UI_QUALITY_CARD_HEIGHT + OVERLAY_UI_SECTION_SPACING;
 }
 
 static inline int overlay_get_scroll_view_top(void)
@@ -214,6 +229,11 @@ static inline int overlay_get_scroll_content_height(void)
     if (overlay_has_cloud_toggle_before_slider((OverlaySliderId)index))
     {
       content_height += overlay_get_cloud_toggle_block_height();
+    }
+
+    if (overlay_has_quality_selector_before_slider((OverlaySliderId)index))
+    {
+      content_height += overlay_get_quality_selector_block_height();
     }
 
     if (overlay_has_gpu_selector_before_slider((OverlaySliderId)index))
@@ -410,7 +430,11 @@ static inline int overlay_get_gpu_selector_rect(
   int* out_right,
   int* out_bottom)
 {
-  const int y = overlay_get_scroll_view_top() - (int)scroll_offset + overlay_get_gameplay_toggle_block_height();
+  const int y =
+    overlay_get_scroll_view_top() -
+    (int)scroll_offset +
+    overlay_get_gameplay_toggle_block_height() +
+    overlay_get_quality_selector_block_height();
   const int left = OVERLAY_UI_MARGIN;
   const int top = y + OVERLAY_UI_LABEL_HEIGHT + OVERLAY_UI_ITEM_SPACING;
   const int right = panel_width - OVERLAY_UI_MARGIN;
@@ -431,6 +455,104 @@ static inline int overlay_get_gpu_selector_rect(
   if (out_bottom != NULL)
   {
     *out_bottom = bottom;
+  }
+
+  return 1;
+}
+
+static inline int overlay_get_quality_selector_rect(
+  int panel_width,
+  float scroll_offset,
+  int* out_left,
+  int* out_top,
+  int* out_right,
+  int* out_bottom)
+{
+  const int y = overlay_get_scroll_view_top() - (int)scroll_offset + overlay_get_gameplay_toggle_block_height();
+  const int left = OVERLAY_UI_MARGIN;
+  const int top = y + OVERLAY_UI_LABEL_HEIGHT + OVERLAY_UI_ITEM_SPACING;
+  const int right = panel_width - OVERLAY_UI_MARGIN;
+  const int bottom = top + OVERLAY_UI_QUALITY_CARD_HEIGHT;
+
+  if (out_left != NULL)
+  {
+    *out_left = left;
+  }
+  if (out_top != NULL)
+  {
+    *out_top = top;
+  }
+  if (out_right != NULL)
+  {
+    *out_right = right;
+  }
+  if (out_bottom != NULL)
+  {
+    *out_bottom = bottom;
+  }
+
+  return 1;
+}
+
+static inline int overlay_get_render_quality_button_rect(
+  int panel_width,
+  float scroll_offset,
+  RendererQualityPreset preset,
+  int* out_left,
+  int* out_top,
+  int* out_right,
+  int* out_bottom)
+{
+  int selector_left = 0;
+  int selector_top = 0;
+  int selector_right = 0;
+  int selector_bottom = 0;
+  const int inner_left_padding = OVERLAY_UI_QUALITY_CARD_PADDING;
+  const int button_gap = OVERLAY_UI_QUALITY_BUTTON_GAP;
+  int left = 0;
+  int top = 0;
+
+  (void)selector_bottom;
+  if (preset < RENDER_QUALITY_PRESET_HIGH || preset >= RENDER_QUALITY_PRESET_COUNT)
+  {
+    return 0;
+  }
+
+  (void)overlay_get_quality_selector_rect(panel_width, scroll_offset, &selector_left, &selector_top, &selector_right, &selector_bottom);
+  left = selector_left + inner_left_padding;
+  top = selector_top + OVERLAY_UI_QUALITY_CARD_PADDING;
+  if (selector_right - selector_left <= inner_left_padding * 2)
+  {
+    return 0;
+  }
+
+  {
+    const int available_width = (selector_right - selector_left) - inner_left_padding * 2 - button_gap * 2;
+    const int computed_button_width = (available_width > 0) ? (available_width / 3) : 0;
+    const int preset_index = (int)preset;
+
+    if (computed_button_width <= 0)
+    {
+      return 0;
+    }
+
+    left += preset_index * (computed_button_width + button_gap);
+    if (out_left != NULL)
+    {
+      *out_left = left;
+    }
+    if (out_top != NULL)
+    {
+      *out_top = top;
+    }
+    if (out_right != NULL)
+    {
+      *out_right = left + computed_button_width;
+    }
+    if (out_bottom != NULL)
+    {
+      *out_bottom = top + OVERLAY_UI_QUALITY_BUTTON_HEIGHT;
+    }
   }
 
   return 1;

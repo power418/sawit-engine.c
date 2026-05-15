@@ -35,9 +35,11 @@ static int platform_point_in_overlay_scroll_view(const PlatformApp* app, int x, 
 static int platform_get_overlay_button_rect(const PlatformApp* app, RECT* out_rect);
 static int platform_get_overlay_toggle_rect(const PlatformApp* app, OverlayToggleId toggle_id, RECT* out_rect);
 static int platform_get_overlay_slider_rect(const PlatformApp* app, OverlaySliderId slider_id, RECT* out_rect);
+static int platform_get_overlay_render_quality_rect(const PlatformApp* app, RendererQualityPreset preset, RECT* out_rect);
 static int platform_get_overlay_gpu_preference_rect(const PlatformApp* app, GpuPreferenceMode mode, RECT* out_rect);
 static OverlayToggleId platform_get_hovered_toggle(const PlatformApp* app, int x, int y);
 static OverlaySliderId platform_get_hovered_slider(const PlatformApp* app, int x, int y);
+static RendererQualityPreset platform_get_hovered_render_quality(const PlatformApp* app, int x, int y);
 static GpuPreferenceMode platform_get_hovered_gpu_preference(const PlatformApp* app, int x, int y);
 static int platform_utf8_to_wide(const char* text, wchar_t* out_text, size_t out_text_count);
 static void platform_toggle_value(PlatformApp* app, OverlayToggleId toggle_id);
@@ -196,6 +198,7 @@ int platform_create(PlatformApp* app, const char* title, int width, int height)
   app->overlay.hot_slider = OVERLAY_SLIDER_NONE;
   app->overlay.active_slider = OVERLAY_SLIDER_NONE;
   app->overlay.hot_toggle = OVERLAY_TOGGLE_NONE;
+  app->overlay.hot_render_quality_preset = -1;
   app->overlay.hot_gpu_preference = -1;
   app->overlay.god_mode_enabled = 0;
   app->overlay.freeze_time_enabled = 0;
@@ -1090,6 +1093,11 @@ static int platform_get_overlay_slider_rect(const PlatformApp* app, OverlaySlide
       y += overlay_get_cloud_toggle_block_height();
     }
 
+    if (overlay_has_quality_selector_before_slider((OverlaySliderId)index))
+    {
+      y += overlay_get_quality_selector_block_height();
+    }
+
     if (overlay_has_gpu_selector_before_slider((OverlaySliderId)index))
     {
       y += overlay_get_gpu_selector_block_height();
@@ -1182,6 +1190,11 @@ static int platform_get_overlay_toggle_rect(const PlatformApp* app, OverlayToggl
       y = rect.bottom + OVERLAY_UI_SECTION_SPACING;
     }
 
+    if (overlay_has_quality_selector_before_slider((OverlaySliderId)index))
+    {
+      y += overlay_get_quality_selector_block_height();
+    }
+
     if (overlay_has_gpu_selector_before_slider((OverlaySliderId)index))
     {
       y += overlay_get_gpu_selector_block_height();
@@ -1196,6 +1209,39 @@ static int platform_get_overlay_toggle_rect(const PlatformApp* app, OverlayToggl
   }
 
   return 0;
+}
+
+static int platform_get_overlay_render_quality_rect(const PlatformApp* app, RendererQualityPreset preset, RECT* out_rect)
+{
+  RECT rect = { 0, 0, 0, 0 };
+  int left = 0;
+  int top = 0;
+  int right = 0;
+  int bottom = 0;
+
+  if (app == NULL || out_rect == NULL)
+  {
+    return 0;
+  }
+
+  if (!overlay_get_render_quality_button_rect(
+    platform_get_overlay_width(app),
+    app->overlay.scroll_offset,
+    preset,
+    &left,
+    &top,
+    &right,
+    &bottom))
+  {
+    return 0;
+  }
+
+  rect.left = left;
+  rect.top = top;
+  rect.right = right;
+  rect.bottom = bottom;
+  *out_rect = rect;
+  return 1;
 }
 
 static int platform_get_overlay_gpu_preference_rect(const PlatformApp* app, GpuPreferenceMode mode, RECT* out_rect)
@@ -1282,6 +1328,24 @@ static OverlaySliderId platform_get_hovered_slider(const PlatformApp* app, int x
   }
 
   return OVERLAY_SLIDER_NONE;
+}
+
+static RendererQualityPreset platform_get_hovered_render_quality(const PlatformApp* app, int x, int y)
+{
+  RendererQualityPreset preset = RENDER_QUALITY_PRESET_HIGH;
+
+  for (preset = RENDER_QUALITY_PRESET_HIGH; preset < RENDER_QUALITY_PRESET_COUNT; ++preset)
+  {
+    RECT rect = { 0 };
+    if (platform_get_overlay_render_quality_rect(app, preset, &rect) &&
+      x >= rect.left && x <= rect.right &&
+      y >= rect.top && y <= rect.bottom)
+    {
+      return preset;
+    }
+  }
+
+  return (RendererQualityPreset)-1;
 }
 
 static GpuPreferenceMode platform_get_hovered_gpu_preference(const PlatformApp* app, int x, int y)
@@ -1437,6 +1501,7 @@ static void platform_update_overlay_interaction(PlatformApp* app, int has_focus)
   app->overlay.cursor_mode_enabled = app->cursor_mode_enabled;
   app->overlay.hot_slider = OVERLAY_SLIDER_NONE;
   app->overlay.hot_toggle = OVERLAY_TOGGLE_NONE;
+  app->overlay.hot_render_quality_preset = -1;
   app->overlay.hot_gpu_preference = -1;
   app->overlay.scroll_max = overlay_get_scroll_max_for_window(app->height);
   if (app->overlay.scroll_offset > app->overlay.scroll_max)
@@ -1469,6 +1534,7 @@ static void platform_update_overlay_interaction(PlatformApp* app, int has_focus)
   {
     app->overlay.hot_toggle = platform_get_hovered_toggle(app, app->overlay.mouse_x, app->overlay.mouse_y);
     app->overlay.hot_slider = platform_get_hovered_slider(app, app->overlay.mouse_x, app->overlay.mouse_y);
+    app->overlay.hot_render_quality_preset = (int)platform_get_hovered_render_quality(app, app->overlay.mouse_x, app->overlay.mouse_y);
     app->overlay.hot_gpu_preference = (int)platform_get_hovered_gpu_preference(app, app->overlay.mouse_x, app->overlay.mouse_y);
   }
 
@@ -1482,6 +1548,14 @@ static void platform_update_overlay_interaction(PlatformApp* app, int has_focus)
     else if (app->overlay.hot_toggle != OVERLAY_TOGGLE_NONE)
     {
       platform_toggle_value(app, (OverlayToggleId)app->overlay.hot_toggle);
+      app->overlay.active_slider = OVERLAY_SLIDER_NONE;
+    }
+    else if (app->overlay.hot_render_quality_preset >= (int)RENDER_QUALITY_PRESET_HIGH &&
+      app->overlay.hot_render_quality_preset < (int)RENDER_QUALITY_PRESET_COUNT)
+    {
+      app->render_quality_change_requested = 1;
+      app->requested_render_quality_preset = (RendererQualityPreset)app->overlay.hot_render_quality_preset;
+      app->overlay.render_quality_preset = app->requested_render_quality_preset;
       app->overlay.active_slider = OVERLAY_SLIDER_NONE;
     }
     else if (app->overlay.hot_gpu_preference >= (int)GPU_PREFERENCE_MODE_AUTO &&

@@ -1377,6 +1377,7 @@ int platform_create(PlatformApp* app, const char* title, int width, int height)
     app->overlay.hot_slider = OVERLAY_SLIDER_NONE;
     app->overlay.active_slider = OVERLAY_SLIDER_NONE;
     app->overlay.hot_toggle = OVERLAY_TOGGLE_NONE;
+    app->overlay.hot_render_quality_preset = -1;
     app->overlay.hot_gpu_preference = -1;
     app->overlay.god_mode_enabled = 0;
     app->overlay.freeze_time_enabled = 0;
