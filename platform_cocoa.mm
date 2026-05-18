@@ -1607,7 +1607,7 @@ void platform_pump_messages(PlatformApp* app, PlatformInput* input)
           if (app->mouse_captured != 0 && app->cursor_mode_enabled == 0)
           {
             app->mouse_dx += (int)lround([event deltaX]);
-            app->mouse_dy -= (int)lround([event deltaY]);
+            app->mouse_dy += (int)lround([event deltaY]);
           }
           else
           {
@@ -1694,8 +1694,8 @@ void platform_pump_messages(PlatformApp* app, PlatformInput* input)
     platform_sync_native_overlay_visibility(app);
     platform_sync_native_settings_controls(app);
 
-    input->look_x = (float)app->mouse_dx;
-    input->look_y = (float)app->mouse_dy;
+    input->look_x = (float)app->mouse_dx * 0.4f;
+    input->look_y = (float)app->mouse_dy * 0.4f;
     if (app->suppress_next_mouse_delta != 0)
     {
       input->look_x = 0.0f;

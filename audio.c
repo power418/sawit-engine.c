@@ -23,6 +23,11 @@
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <signal.h>
+#include <fcntl.h>
 #endif
 
 enum
@@ -56,6 +61,13 @@ static int audio_set_volume(AudioState* state, int volume, int log_failure);
 static void audio_begin_fade_in(AudioState* state);
 static void audio_update_fade(AudioState* state);
 static int audio_clamp_int(int value, int min_value, int max_value);
+
+#if defined(__linux__)
+static int audio_linux_open_and_play(AudioState* state, const char* path);
+static void audio_linux_stop(AudioState* state);
+static int audio_linux_is_playing(const AudioState* state);
+static int audio_linux_set_volume(AudioState* state, int volume);
+#endif
 
 #if defined(_WIN32)
 typedef struct AudioWavePlayer
@@ -123,7 +135,7 @@ int audio_start_music(AudioState* state)
 
   diagnostics_logf("audio: background music started with %zu track(s), now playing '%s'", state->track_count, state->active_path);
   return 1;
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__linux__)
   if (!audio_play_track_from(state, 0U))
   {
     diagnostics_log("audio: failed to start any playable music track from res/audio");
@@ -135,7 +147,7 @@ int audio_start_music(AudioState* state)
   return 1;
 #else
   diagnostics_logf("audio: found %zu music track(s) in res/audio", state->track_count);
-  diagnostics_log("audio: native background music playback is currently implemented only for Windows and macOS");
+  diagnostics_log("audio: native background music playback is currently implemented only for Windows, macOS, and Linux");
   return 0;
 #endif
 }
@@ -186,7 +198,7 @@ void audio_update(AudioState* state)
       (state->track_count > 1U) ? ((state->current_track_index + 1U) % state->track_count) : state->current_track_index;
     (void)audio_play_track_from(state, next_track_index);
   }
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__linux__)
   if (state == NULL || state->is_open == 0)
   {
     return;
@@ -194,10 +206,17 @@ void audio_update(AudioState* state)
 
   audio_update_fade(state);
 
+#if defined(__APPLE__)
   if (audio_macos_is_playing(state))
   {
     return;
   }
+#else
+  if (audio_linux_is_playing(state))
+  {
+    return;
+  }
+#endif
 
   if (state->track_count > 0U)
   {
@@ -239,6 +258,11 @@ void audio_stop(AudioState* state)
   if (state->native_player != NULL)
   {
     audio_macos_stop(state);
+  }
+#elif defined(__linux__)
+  if (state->native_player_pid != 0)
+  {
+    audio_linux_stop(state);
   }
 #endif
 
@@ -1374,6 +1398,20 @@ static int audio_open_and_play(AudioState* player, const char* path)
     audio_begin_fade_in(player);
     return 1;
   }
+#elif defined(__linux__)
+  {
+    audio_stop(player);
+    player->target_volume = AUDIO_DEFAULT_TARGET_VOLUME;
+    if (!audio_linux_open_and_play(player, path))
+    {
+      return 0;
+    }
+
+    player->is_open = 1;
+    (void)snprintf(player->active_path, sizeof(player->active_path), "%s", path);
+    audio_begin_fade_in(player);
+    return 1;
+  }
 #else
   (void)player;
   (void)path;
@@ -1453,6 +1491,15 @@ static int audio_set_volume(AudioState* state, int volume, int log_failure)
     }
     return 0;
   }
+#elif defined(__linux__)
+  if (!audio_linux_set_volume(state, clamped_volume))
+  {
+    if (log_failure != 0)
+    {
+      diagnostics_logf("audio: failed to set Linux track volume to %d", clamped_volume);
+    }
+    return 0;
+  }
 #else
   (void)log_failure;
   return 0;
@@ -1518,3 +1565,64 @@ static int audio_clamp_int(int value, int min_value, int max_value)
   }
   return value;
 }
+
+#if defined(__linux__)
+static int audio_linux_open_and_play(AudioState* state, const char* path)
+{
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    return 0;
+  }
+
+  if (pid == 0)
+  {
+    int dev_null = open("/dev/null", O_WRONLY);
+    if (dev_null != -1)
+    {
+      dup2(dev_null, STDOUT_FILENO);
+      dup2(dev_null, STDERR_FILENO);
+      close(dev_null);
+    }
+    
+    execlp("pw-play", "pw-play", path, NULL);
+    execlp("paplay", "paplay", path, NULL);
+    execlp("ffplay", "ffplay", "-nodisp", "-autoexit", path, NULL);
+    exit(1);
+  }
+
+  state->native_player_pid = pid;
+  return 1;
+}
+
+static void audio_linux_stop(AudioState* state)
+{
+  if (state->native_player_pid != 0)
+  {
+    kill(state->native_player_pid, SIGTERM);
+    waitpid(state->native_player_pid, NULL, 0);
+    state->native_player_pid = 0;
+  }
+}
+
+static int audio_linux_is_playing(const AudioState* state)
+{
+  if (state->native_player_pid != 0)
+  {
+    int status;
+    pid_t result = waitpid(state->native_player_pid, &status, WNOHANG);
+    if (result == 0)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int audio_linux_set_volume(AudioState* state, int volume)
+{
+  (void)state;
+  (void)volume;
+  return 1;
+}
+#endif

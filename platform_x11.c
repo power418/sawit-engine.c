@@ -1170,7 +1170,7 @@ void platform_pump_messages(PlatformApp* app, PlatformInput* input)
           const int center_x = app->width / 2;
           const int center_y = app->height / 2;
           const int delta_x = event.xmotion.x - center_x;
-          const int delta_y = center_y - event.xmotion.y;
+          const int delta_y = event.xmotion.y - center_y;
 
           if (app->suppress_next_mouse_delta != 0 && delta_x == 0 && delta_y == 0)
           {
@@ -1233,8 +1233,8 @@ void platform_pump_messages(PlatformApp* app, PlatformInput* input)
     platform_toggle_fullscreen(app);
   }
 
-  input->look_x = (float)app->mouse_dx;
-  input->look_y = (float)app->mouse_dy;
+  input->look_x = (float)app->mouse_dx * 0.4f;
+  input->look_y = (float)app->mouse_dy * 0.4f;
   if (app->cursor_mode_enabled != 0)
   {
     input->look_x = 0.0f;

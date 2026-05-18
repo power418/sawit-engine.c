@@ -23,6 +23,8 @@ typedef struct AudioState
   unsigned long long fade_start_ms;
 #if defined(_WIN32) || defined(__APPLE__)
   void* native_player;
+#else
+  int native_player_pid;
 #endif
 } AudioState;
 
